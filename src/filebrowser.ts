@@ -165,6 +165,7 @@ export class FileBrowser {
 
   public async start(): Promise<void> {
     process.stdin.on('keypress', this.handleKeyPress);
+    console.clear();
     this.promptMainMenu();
   }
 
@@ -197,7 +198,6 @@ export class FileBrowser {
       footer: '[R]ename, [C]reate folder, [D]elete, [M]ove, [U]pdate, [H]oist files, [P]urge non-videos, [S]tandardize names, [E]xit',
     });
 
-    console.clear();
     const selectedFolder = await this.filesPrompt.run();
     this.filesPrompt.stop();
     if (selectedFolder === '..') {
@@ -206,6 +206,7 @@ export class FileBrowser {
       this.highlightedFolder = '..';
     }
     this.currentDirectory = path.join(this.currentDirectory, selectedFolder);
+    console.clear();
     this.promptMainMenu();
   }
 
@@ -235,6 +236,7 @@ export class FileBrowser {
       // probably just aborted
     }
 
+    console.clear();
     this.promptMainMenu();
   }
 
@@ -258,6 +260,7 @@ export class FileBrowser {
       // probably just aborted
     }
 
+    console.clear();
     this.promptMainMenu();
   }
 
@@ -284,6 +287,7 @@ export class FileBrowser {
       // probably just aborted
     }
 
+    console.clear();
     this.promptMainMenu();
   }
 
@@ -325,6 +329,7 @@ export class FileBrowser {
       // probably just aborted
     }
 
+    console.clear();
     this.promptMainMenu();
   }
 
@@ -378,12 +383,14 @@ export class FileBrowser {
       this.promptMoveFolder(path.join(currentDirectory, selectedFolder), folderToMove);
     } catch {
       this.moveFolderPrompt.stop();
+      console.clear();
       this.promptMainMenu();
     }
   }
 
   private async moveFolder(folderToMove: string, target: string) {
     await fsPromises.rename(folderToMove, target);
+    console.clear();
     this.promptMainMenu();
   }
 
@@ -416,6 +423,7 @@ export class FileBrowser {
       // probably just aborted
     }
 
+    console.clear();
     this.promptMainMenu();
   }
 
@@ -453,6 +461,7 @@ export class FileBrowser {
       this.promptSeriesName(seriesDirectory, this.currentSeriesLanguage);
     } catch {
       this.seriesLanguagePrompt.stop();
+      console.clear();
       this.promptMainMenu();
     }
   }
@@ -543,7 +552,7 @@ export class FileBrowser {
       message: null,
       choices: options,
       header: `Folder: ${seriesDirectory}\nLanguage: ${seriesLanguage.englishName}\nSeries: ${selectedSeries.seriesName}`,
-      footer: 'esc = abort',
+      footer: '[a]ccept, esc = abort',
       initial: this.currentEpisodeAssign ? this.currentEpisodeAssign.name : undefined,
     });
   
@@ -611,6 +620,22 @@ export class FileBrowser {
       console.clear();
       this.promptSeriesName(seriesDirectory, seriesLanguage);
     }
+  }
+
+  private async renameEpisodes(episodeRenames: SeasonMapping) {
+    let renamedFileCount = 0;
+    const seasonMappings = Object.values(episodeRenames).map((season: {folderName?: string, episodeMappings: Array<EpisodeMapping>}): Promise<Array<void>> => {
+      const episodeMappings = season.episodeMappings.map(async(episodeMapping: EpisodeMapping): Promise<void> =>{
+        if (episodeMapping.value.rename !== false) {
+          renamedFileCount++;
+          return fsPromises.rename(episodeMapping.value.originalPath, episodeMapping.value.updatedPath);
+        }
+      });
+      return Promise.all(episodeMappings);
+    });
+
+    await Promise.all(seasonMappings);
+    console.log(`renamed ${renamedFileCount} files`);
   }
 
   private async getAllFilesInFolder(folderPath: string): Promise<Array<string>> {
@@ -739,6 +764,7 @@ export class FileBrowser {
     }
     if (key === 'u') {
       this.filesPrompt.stop();
+      console.clear();
       this.promptMainMenu();
     }
     if (key === 'p') {
@@ -760,6 +786,7 @@ export class FileBrowser {
     }
     if (data.name === 'backspace') {
       this.moveFolderPrompt.stop();
+      console.clear();
       this.promptMainMenu();
     }
   }
@@ -767,6 +794,7 @@ export class FileBrowser {
   private handleHoistFilesKeyPress(key: string, data: KeyPressData): void {
     if (data.name === 'backspace') {
       this.confirmHoistPrompt.stop();
+      console.clear();
       this.promptMainMenu();
     }
   }
@@ -774,6 +802,7 @@ export class FileBrowser {
   private handleNonVideoPurgeKeyPress(key: string, data: KeyPressData): void {
     if (data.name === 'backspace') {
       this.confirmPurgePrompt.stop();
+      console.clear();
       this.promptMainMenu();
     }
   }
@@ -781,6 +810,7 @@ export class FileBrowser {
   private handleSeriesLanguageKeyPress(key: string, data: KeyPressData): void {
     if (data.name === 'backspace') {
       this.seriesLanguagePrompt.stop();
+      console.clear();
       this.promptMainMenu();
     }
   }
@@ -798,6 +828,12 @@ export class FileBrowser {
       this.episodeRenamePrompt.stop();
       console.clear();
       this.promptSeriesSuggestions(this.currentSeriesDirectory, this.currentSeriesLanguage, this.currentSeriesName);
+    }
+    if (key === 'a') {
+      this.episodeRenamePrompt.stop();
+      console.clear();
+      this.renameEpisodes(this.currentEpisodeRenames);
+      this.promptMainMenu();
     }
   }
 
