@@ -16,8 +16,12 @@ export class FileBrowser {
   private startDirectory: string;
   private currentDirectory: string;
   private highlightedFolder: string = '..';
-  private currentPrompt: 'folder-selection' | 'rename' | 'create-folder' | 'delete-folder' | 'series-name' | 'series-selection';
+  private currentPrompt: 'folder-selection' | 'rename' | 'create-folder' | 'delete-folder' | 'series-name' | 'series-selection' | 'move-folder';
   private filesPrompt: Select;
+
+  private currentFolderToMove: string;
+  private currentMoveTarget: string;
+
   constructor(startDirectory: string = process.cwd()) {
     this.startDirectory = startDirectory;
     this.currentDirectory = this.startDirectory;
@@ -57,11 +61,16 @@ export class FileBrowser {
       choices: options,
       header: this.currentDirectory,
       initial: this.highlightedFolder,
-      footer: '[r]ename, [c]reate folder, [d]elete, [h]oist files',
+      footer: '[r]ename, [c]reate folder, [d]elete, [m]ove, [h]oist files, [u]pdate',
     });
 
     console.clear();
     const selectedFolder = await this.filesPrompt.run();
+    if (selectedFolder === '..') {
+      this.highlightedFolder = path.basename(this.currentDirectory);
+    } else {
+      this.highlightedFolder = '..';
+    }
     this.currentDirectory = path.join(this.currentDirectory, selectedFolder);
     this.promptMainMenu();
   }
@@ -179,6 +188,65 @@ export class FileBrowser {
     this.promptMainMenu();
   }
 
+  private async promptMoveFolder(currentDirectory: string, folderToMove: string): Promise<void> {
+    this.currentPrompt = 'move-folder';
+    this.currentFolderToMove = folderToMove;
+    const folders = await this.getFolderNames(currentDirectory)
+    const folderNameToMove = path.basename(folderToMove);
+    this.currentMoveTarget = path.join(currentDirectory, folderNameToMove);
+
+    const folderAlreadyExists = folders.some((folderName) => {
+      return folderName === folderNameToMove;
+    });
+
+    const targetIsAcceptable = !folderAlreadyExists;
+
+    const folderOptions = folders.map((folderName: string) => {
+      const targetIsInsideSelf = path.join(currentDirectory, folderName).startsWith(folderToMove);
+      let folderIsDisabled: string | boolean = false;
+      if (targetIsInsideSelf) {
+        folderIsDisabled = '(can\'t move a folder into itself)';
+      }
+      return {name: folderName, message: folderName, value: folderName, disabled: folderIsDisabled}
+    });
+
+    const options = [
+      {name: '..', message: '..', value: '..'},
+      ...folderOptions,
+    ]
+
+    const header = folderAlreadyExists
+      ? `move: ${folderToMove}\n  to: '${folderNameToMove}' already exists here. choose a different location.`
+      : `move: ${folderToMove}\n  to: ${path.join(currentDirectory, folderNameToMove)}`;
+
+    const footer = targetIsAcceptable
+      ? '[a]ccept, esc = abort'
+      : 'esc = abort'
+
+    const moveFolderPrompt = new Select({
+      name: 'targetFolder',
+      message: null,
+      choices: options,
+      header: header,
+      initial: this.highlightedFolder,
+      footer: footer,
+    });
+
+    console.clear();
+    try {
+      const selectedFolder = await moveFolderPrompt.run();
+      this.promptMoveFolder(path.join(currentDirectory, selectedFolder), folderToMove);
+    } catch {
+      moveFolderPrompt.stop();
+      this.promptMainMenu();
+    }
+  }
+
+  private async moveFolder(folderToMove: string, target: string) {
+    await fsPromises.rename(folderToMove, target);
+    this.promptMainMenu();
+  }
+
   private async getAllFilesInFolder(folderPath: string): Promise<Array<string>> {
     const currentFolderItems = await fsPromises.readdir(folderPath);
     const [files, folders] = await Promise.all([
@@ -250,8 +318,13 @@ export class FileBrowser {
     if (this.currentPrompt === 'folder-selection') {
       this.handleFolderSelectionKeyPress(key, data);
     }
+
     if (this.currentPrompt === 'rename') {
       this.handleRenameKeyPress(key, data);
+    }
+
+    if (this.currentPrompt === 'move-folder') {
+      this.handleMoveFolderKeyPress(key, data);
     }
 
     if (this.currentPrompt === 'series-name') {
@@ -265,8 +338,8 @@ export class FileBrowser {
 
   private handleFolderSelectionKeyPress(key: string, data: KeyPressData): void {
     this.highlightedFolder = this.filesPrompt.selected.value;
+    const selectedFolder = path.join(this.currentDirectory, this.filesPrompt.selected.value);
     if (key === 'r') {
-      const selectedFolder = path.join(this.currentDirectory, this.filesPrompt.selected.value);
       this.filesPrompt.stop();
       this.promptRename(selectedFolder);
     }
@@ -276,11 +349,19 @@ export class FileBrowser {
     }
     if (key === 'd') {
       this.filesPrompt.stop();
-      const selectedFolder = path.join(this.currentDirectory, this.filesPrompt.selected.value);
       this.promptDeleteFolder(selectedFolder);
     }
     if (key === 'h') {
+      this.filesPrompt.stop();
       this.hoistFiles(this.currentDirectory);
+    }
+    if (key === 'm') {
+      this.filesPrompt.stop();
+      this.promptMoveFolder(this.currentDirectory, selectedFolder);
+    }
+    if (key === 'u') {
+      this.filesPrompt.stop();
+      this.promptMainMenu();
     }
   }
 
@@ -294,5 +375,11 @@ export class FileBrowser {
 
   private handleSeriesSelectionKeyPress(key: string, data: KeyPressData): void {
 
+  }
+
+  private handleMoveFolderKeyPress(key: string, data: KeyPressData): void {
+    if (key === 'a') {
+      this.moveFolder(this.currentFolderToMove, this.currentMoveTarget);
+    }
   }
 }
