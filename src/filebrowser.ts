@@ -80,12 +80,14 @@ interface EpisodeMapping extends ArrayPromptOption {
     rename: boolean,
     episode: Episode,
     episodeNumber: string,
+    seasonNumber: number,
+    seasonFolder: string,
   }
 }
 
 interface SeasonMapping {
   [season: number]: {
-    folderName: string,
+    folderName?: string,
     episodeMappings: Array<EpisodeMapping>
   }
 }
@@ -144,6 +146,7 @@ export class FileBrowser {
   private seriesNamePrompt: Input;
   private seriesSelectionPrompt: Select;
   private episodeRenamePrompt: Select;
+  private episodeAssignPrompt: Select;
 
   private currentFolderToMove: string;
   private currentMoveTarget: string;
@@ -555,7 +558,7 @@ export class FileBrowser {
       this.currentEpisodeAssign = this.episodeRenamePrompt.selected;
       this.episodeRenamePrompt.stop();
       console.clear();
-      this.promptEpisodeAssign(seriesDirectory, seriesLanguage, selectedSeries, this.currentEpisodeAssign);
+      this.promptEpisodeAssign(seriesDirectory, seriesLanguage, seriesDetails, this.currentEpisodeAssign);
     } catch {
       this.episodeRenamePrompt.stop();
       console.clear();
@@ -563,8 +566,58 @@ export class FileBrowser {
     }
   }
 
-  private promptEpisodeAssign(seriesDirectory: string, seriesLanguage: SeriesLanguage, selectedSeries: Series, episodeMapping: EpisodeMapping) {
+  private async promptEpisodeAssign(seriesDirectory: string, seriesLanguage: SeriesLanguage, selectedSeries: Series, episodeMapping: EpisodeMapping) {
     this.currentPrompt = 'assign-episode';
+    const possibleEpisodes = this.generateEpisodeSelection(selectedSeries, episodeMapping.value.seasonNumber);
+
+    const seasons = Object.keys(possibleEpisodes).sort();
+    const options = [];
+    for (const season of seasons) {
+      options.push({
+        name: `season${season}`,
+        message: `--- Season ${season} ---`,
+        value: `season${season}`,
+        disabled: '',
+      }, ...possibleEpisodes[season].episodeMappings)
+    }
+    this.episodeAssignPrompt = new Select({
+      name: 'episodeAssign',
+      message: null,
+      choices: options,
+      header: `File: ${episodeMapping.value.originalPath}\nLanguage: ${seriesLanguage.englishName}\nSeries: ${selectedSeries.seriesName}`,
+      footer: 'esc = abort',
+    });
+  
+    try {
+      await this.episodeAssignPrompt.run();
+      const selectedEpisode: Episode = this.episodeAssignPrompt.selected.value;
+      const episodesInSeason = selectedSeries.episodes.filter((seriesEpisode: Episode) => {
+        return seriesEpisode.airedSeason === selectedEpisode.airedSeason;
+      });
+      const seasonMappings = this.currentEpisodeRenames[episodeMapping.value.seasonNumber];
+      for (let i = 0; i < seasonMappings.episodeMappings.length; i++) {
+        if (seasonMappings.episodeMappings[i].name === episodeMapping.name) {
+          seasonMappings.episodeMappings[i] = this.generateEpisodeName(
+            selectedSeries.seriesName,
+            episodeMapping.value.seasonFolder,
+            episodeMapping.value.seasonNumber,
+            path.basename(episodeMapping.value.originalPath),
+            episodesInSeason,
+            selectedEpisode.airedEpisodeNumber,
+          )
+          console.log(seasonMappings.episodeMappings[i]);
+        }
+      }
+
+      this.currentEpisodeRenames[episodeMapping.value.seasonNumber].episodeMappings.sort(this.sortEpisodeMappings);
+      this.episodeAssignPrompt.stop();
+      console.clear();
+      this.promptEpisodeRenames(seriesDirectory, seriesLanguage, selectedSeries);
+    } catch {
+      this.episodeAssignPrompt.stop();
+      console.clear();
+      this.promptSeriesName(seriesDirectory, seriesLanguage);
+    }
   }
 
   private async getAllFilesInFolder(folderPath: string): Promise<Array<string>> {
@@ -763,6 +816,36 @@ export class FileBrowser {
     }
   }
 
+  private generateEpisodeSelection(seriesDetails: Series, targetSeason?: number): SeasonMapping {
+    const result = {};
+    for (const episode of seriesDetails.episodes) {
+      const season = episode.airedSeason;
+      if (targetSeason !== undefined && season !== targetSeason) {
+        continue;
+      }
+      if (result[season] === undefined) {
+        result[season] = {episodeMappings: []}
+      }
+
+      result[season].episodeMappings.push(this.generateEpisodeMapping(seriesDetails, episode));
+    }
+  
+    return result;
+  }
+
+  private generateEpisodeMapping(seriesDetails: Series, episode: Episode): ArrayPromptOption {
+    const episodesInSeason = seriesDetails.episodes.filter((seriesEpisode: Episode) => {
+      return seriesEpisode.airedSeason === episode.airedSeason;
+    });
+
+    const prefixedEpisodeNumber = this.generateEpisodeNumber(episode.airedEpisodeNumber, episodesInSeason.length);
+    return {
+      name: `${episode.id}`,
+      message: `E${prefixedEpisodeNumber}: ${episode.episodeName}`,
+      value: episode,
+    }
+  } 
+
   private async generateEpisodeNames(seriesDirectory: string, seriesDetails: Series): Promise<SeasonMapping> {
     const folders = await this.getFolderNames(seriesDirectory);
     
@@ -803,55 +886,65 @@ export class FileBrowser {
 
     const filesInSeasonFolder = await this.getFileNames(seasonFolder);
     return filesInSeasonFolder.map((fileName) => {
-      return this.generateEpisodeName(seriesDetails.seriesName, seasonFolder, fileName, episodesInSeason);
+      return this.generateEpisodeName(seriesDetails.seriesName, seasonFolder, season, fileName, episodesInSeason);
     })
     .filter((episodeMapping: EpisodeMapping) => {
       return episodeMapping !== undefined;
     })
-    .sort((episodeMapping1: EpisodeMapping, episodeMapping2: EpisodeMapping): number => {
-      const episode1 = episodeMapping1.value.episode !== undefined
-        ? episodeMapping1.value.episode.airedEpisodeNumber
-        : undefined;
-
-      const episode2 = episodeMapping2.value.episode !== undefined
-        ? episodeMapping2.value.episode.airedEpisodeNumber
-        : undefined;
-        
-      if (episode1 === episode2) {
-        return 0;
-      }
-      
-      if (episode1 === undefined) {
-        return 1
-      }
-
-      if (episode2 === undefined) {
-        return -1;
-      }
-
-      return episode1 - episode2;
-
-    })
+    .sort(this.sortEpisodeMappings)
   }
 
-  private generateEpisodeName(seriesName: string, seasonFolder: string, fileName: string, episodesInSeason: Array<Episode>): EpisodeMapping {
+  private sortEpisodeMappings(episodeMapping1: EpisodeMapping, episodeMapping2: EpisodeMapping): number {
+    const episode1 = episodeMapping1.value.episode !== undefined
+      ? episodeMapping1.value.episode.airedEpisodeNumber
+      : undefined;
+
+    const episode2 = episodeMapping2.value.episode !== undefined
+      ? episodeMapping2.value.episode.airedEpisodeNumber
+      : undefined;
+      
+    if (episode1 === episode2) {
+      return 0;
+    }
+    
+    if (episode1 === undefined) {
+      return 1
+    }
+
+    if (episode2 === undefined) {
+      return -1;
+    }
+
+    return episode1 - episode2;
+  }
+
+  private generateEpisodeName(
+    seriesName: string,
+    seasonFolder: string,
+    seasonNumber: number,
+    fileName: string,
+    episodesInSeason: Array<Episode>,
+    forceEpisodeNumber?: number,
+  ): EpisodeMapping {
     const fileExtension = path.extname(fileName).toLowerCase();
     const fileIsVideo = videoFileExtensions.includes(fileExtension);
     if (!fileIsVideo) {
-      return this.unchangedEpisodeMapping(seasonFolder, fileName);
+      return this.unchangedEpisodeMapping(seasonFolder, seasonNumber, fileName);
     }
 
-    let episodeNumber;
-    for (const {regex, numberStart} of episodeRegexes) {
-      const episodeNumberMatch = fileName.match(regex);
-      if (episodeNumberMatch !== undefined) {
-        episodeNumber = parseInt(episodeNumberMatch[0].substring(numberStart))
-        break;
+    let episodeNumber = forceEpisodeNumber;
+    if (episodeNumber === undefined) {
+      for (const {regex, numberStart} of episodeRegexes) {
+        const episodeNumberMatch = fileName.match(regex);
+        if (episodeNumberMatch !== null) {
+          episodeNumber = parseInt(episodeNumberMatch[0].substring(numberStart))
+          break;
+        }
       }
     }
-
+  
     if (episodeNumber === undefined) {
-      return this.unchangedEpisodeMapping(seasonFolder, fileName);
+      return this.unchangedEpisodeMapping(seasonFolder, seasonNumber, fileName);
     }
 
     const episode = episodesInSeason.find((episode: Episode) => {
@@ -859,7 +952,7 @@ export class FileBrowser {
     });
 
     if (episode === undefined) {
-      return this.unchangedEpisodeMapping(seasonFolder, fileName);
+      return this.unchangedEpisodeMapping(seasonFolder, seasonNumber, fileName);
     }
 
     const prefixedEpisodeNumber = this.generateEpisodeNumber(episodeNumber, episodesInSeason.length);
@@ -880,6 +973,8 @@ export class FileBrowser {
         episode: episode,
         rename: fileName !== sanatizedName,
         episodeNumber: prefixedEpisodeNumber,
+        seasonNumber: seasonNumber,
+        seasonFolder: seasonFolder,
       }
     }
   }
@@ -891,7 +986,7 @@ export class FileBrowser {
     return this.threeZero(episodeNumber);
   }
 
-  private unchangedEpisodeMapping(seasonFolder: string, fileName: string): EpisodeMapping {
+  private unchangedEpisodeMapping(seasonFolder: string, seasonNumber: number, fileName: string): EpisodeMapping {
     return {
       name: fileName,
       message: `--- ${fileName}`,
@@ -901,6 +996,8 @@ export class FileBrowser {
         episode: undefined,
         rename: false,
         episodeNumber: undefined,
+        seasonNumber: seasonNumber,
+        seasonFolder: seasonFolder,
       }
     }
   }
