@@ -3,7 +3,6 @@ import {Select, Input, Confirm} from 'enquirer/lib/prompts';
 import path from 'path';
 import rimraf from 'rimraf';
 import TVDB from 'node-tvdb';
-import util from 'util';
 
 type KeyPressData = {
   sequence: string,
