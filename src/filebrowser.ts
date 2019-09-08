@@ -1,8 +1,9 @@
-import {promises as fsPromises} from 'fs';
+import {promises as fsPromises, rename} from 'fs';
 import {Select, Input, Confirm} from 'enquirer/lib/prompts';
 import path from 'path';
 import rimraf from 'rimraf';
-import tvdbjs from 'tvdb.js';
+import TVDB from 'node-tvdb';
+import util from 'util';
 
 type KeyPressData = {
   sequence: string,
@@ -12,9 +13,108 @@ type KeyPressData = {
   shift: boolean,
 };
 
-const tv = tvdbjs(process.env.TVDB_API_KEY);
+type SeriesLanguage = {
+  id: number,
+  abbreviation: string,
+  name: string,
+  englishName: string,
+}
+
+type Episode = {
+  id: number,
+  airedSeason: number,
+  airedSeasonID: number,
+  airedEpisodeNumber: number,
+  episodeName: string,
+  firstAired: string,
+  overview: string,
+  productionCode: string,
+  showUrl: string,
+  lastUpdated: number,
+  dvdDiscid: string,
+  dvdSeason: number,
+  dvdEpisodeNumber: number
+  dvdChapter: number,
+  absoluteNumber: number,
+  filename: string,
+  seriesId: number,
+  lastUpdatedBy: number,
+  thumbAuthor: number,
+  thumbAdded: string,
+  thumbWidth: string,
+  thumbHeight: string,
+  imdbId: string,
+  siteRating: number,
+  siteRatingCount: number
+}
+
+type Series = {
+  aliases: Array<string>,
+  banner: string,
+  firsAired: string,
+  id: number,
+  network: string,
+  overview: string,
+  seriesName: string,
+  slug: string,
+  status: string,
+  episodes: Array<Episode>
+}
+
+type ArrayPromptOption = {
+  name: string,
+  message: string,
+  value: any,
+  disabled?: boolean,
+}
+
+type FolderSeasonMatch = {
+  folderName: string,
+  season: number,
+}
+
+interface EpisodeMapping extends ArrayPromptOption {
+  value: {
+    originalPath: string,
+    updatedPath: string,
+    rename: boolean,
+    episode: Episode,
+    episodeNumber: string,
+  }
+}
+
+interface SeasonMapping {
+  [season: number]: {
+    folderName: string,
+    episodeMappings: Array<EpisodeMapping>
+  }
+}
+
+const tvdb = new TVDB(process.env.TVDB_API_KEY);
 
 const videoFileExtensions = ['.mp4', '.mkv', '.avi'];
+const episodeRegexes = [
+  {regex: /[eE]\d+/, numberStart: 1},
+  {regex: /[xX]\d+/, numberStart: 1},
+  {regex: /\d+/, numberStart: 0}
+];
+const episodeReplaces = [
+  {regex: /ä/g, replacement: 'ae'},
+  {regex: /ö/g, replacement: 'oe'},
+  {regex: /ü/g, replacement: 'ue'},
+  {regex: /ß/g, replacement: 'ss'},
+  {regex: /Ä/g, replacement: 'AE'},
+  {regex: /Ö/g, replacement: 'OE'},
+  {regex: /Ü/g, replacement: 'UE'},
+  {regex: /\?/g, replacement: ''},
+  {regex: /,/g, replacement: ''},
+  {regex: /: /g, replacement: '-'},
+  {regex: /:/g, replacement: '-'},
+  {regex: /"/g, replacement: '\''},
+  {regex: / /g, replacement: '.'},
+  {regex: /\//g, replacement: '_'},
+  {regex: /\t/g, replacement: ''},
+]
 
 export class FileBrowser {
 
@@ -40,16 +140,20 @@ export class FileBrowser {
   private confirmHoistPrompt: Confirm;
   private moveFolderPrompt: Select;
   private confirmPurgePrompt: Confirm;
-
+  private seriesLanguagePrompt: Select;
+  private seriesNamePrompt: Input;
+  private seriesSelectionPrompt: Select;
+  private episodeRenamePrompt: Select;
 
   private currentFolderToMove: string;
   private currentMoveTarget: string;
 
   private currentSeriesDirectory: string;
-  private currentSeriesLanguage: string;
+  private currentSeriesLanguage: SeriesLanguage;
   private currentSeriesName: string;
-  private currentSeries: any;
-  private currentEpisodeRenames: Array<any>;
+  private currentSeries: Series;
+  private currentEpisodeRenames: SeasonMapping;
+  private currentEpisodeAssign: EpisodeMapping;
 
   constructor(startDirectory: string = process.cwd()) {
     this.startDirectory = startDirectory;
@@ -93,6 +197,7 @@ export class FileBrowser {
 
     console.clear();
     const selectedFolder = await this.filesPrompt.run();
+    this.filesPrompt.stop();
     if (selectedFolder === '..') {
       this.highlightedFolder = path.basename(this.currentDirectory);
     } else {
@@ -119,11 +224,13 @@ export class FileBrowser {
     console.clear();
     try {
       const newName = await renamePrompt.run();
+      renamePrompt.stop();
       const oldPath = path.join(directory, filename);
       const newPath = path.join(directory, newName);
       await fsPromises.rename(oldPath, newPath);
       this.highlightedFolder = newName;
     } catch (error) {
+      renamePrompt.stop();
       // probably just aborted
     }
 
@@ -143,9 +250,11 @@ export class FileBrowser {
     console.clear();
     try {
       const folderName = await createFolderPrompt.run();
+      createFolderPrompt.stop();
       await fsPromises.mkdir(path.join(targetDirectory, folderName));
       this.highlightedFolder = folderName;
     } catch (error) {
+      createFolderPrompt.stop();
       // probably just aborted
     }
 
@@ -163,6 +272,7 @@ export class FileBrowser {
     console.clear();
     try {
       const userAgreed = await this.confirmDeletePrompt.run();
+      this.confirmDeletePrompt.stop();
       if (userAgreed) {
         await new Promise((resolve) => {
           rimraf(filePath, resolve);
@@ -170,6 +280,7 @@ export class FileBrowser {
         this.highlightedFolder = '..';
       }
     } catch (error) {
+      this.confirmDeletePrompt.stop();
       // probably just aborted
     }
 
@@ -187,6 +298,7 @@ export class FileBrowser {
 
     try {
       const userAgreed = await this.confirmHoistPrompt.run();
+      this.confirmHoistPrompt.stop();
       if (userAgreed) {
         // move all children to the target directory
         await Promise.all(files.map((filePath: string) => {
@@ -209,7 +321,7 @@ export class FileBrowser {
         this.highlightedFolder = '..';
       }
     } catch (error) {
-      console.log(error);
+      this.confirmHoistPrompt.stop();
       // probably just aborted
     }
 
@@ -263,6 +375,7 @@ export class FileBrowser {
     console.clear();
     try {
       const selectedFolder = await this.moveFolderPrompt.run();
+      this.moveFolderPrompt.stop();
       this.promptMoveFolder(path.join(currentDirectory, selectedFolder), folderToMove);
     } catch {
       this.moveFolderPrompt.stop();
@@ -279,7 +392,7 @@ export class FileBrowser {
     this.currentPrompt = 'non-video-purge';
     const files = await this.getAllFilesInFolder(folderToPurge);
     const nonVideoFiles = files.filter((filename: string) => {
-      const fileExtension = path.extname(filename);
+      const fileExtension = path.extname(filename).toLowerCase();
       const fileIsVideo = videoFileExtensions.includes(fileExtension);
       return !fileIsVideo;
     });
@@ -292,6 +405,7 @@ export class FileBrowser {
 
     try {
       const userAgreed = await this.confirmPurgePrompt.run();
+      this.confirmPurgePrompt.stop();
       if (userAgreed) {
         // delete all non-video-files
         await Promise.all(nonVideoFiles.map((fileName: string) => {
@@ -299,7 +413,7 @@ export class FileBrowser {
         }));
       }
     } catch (error) {
-      console.log(error);
+      this.confirmPurgePrompt.stop();
       // probably just aborted
     }
 
@@ -308,53 +422,148 @@ export class FileBrowser {
 
   private async promptSeriesRename(seriesDirectory: string): Promise<void> {
     this.currentSeriesDirectory = seriesDirectory;
+    console.clear();
     this.promptSeriesLanguage(seriesDirectory);
   }
 
-  promptSeriesLanguage(seriesDirectory) {
+  private async promptSeriesLanguage(seriesDirectory) {
     this.currentPrompt = 'series-language';
-    this.currentSeriesLanguage = '';
-    this.promptSeriesName(seriesDirectory, this.currentSeriesLanguage);
-  }
-
-  private async promptSeriesName(seriesDirectory: string, seriesLanguage: string) {
-    this.currentPrompt = 'series-name';
-
-    const seriesName = path.basename(seriesDirectory);
-
-    const seriesNamePrompt = new Input({
-      name: 'series name',
-      message: `series name`,
-      header: seriesDirectory,
-      footer: 'esc = abort',
-      initial: seriesName,
+    const languages: Array<SeriesLanguage> = await tvdb.getLanguages();
+    
+    const options = languages.map((language: any) => {
+      return {
+        name: language.abbreviation,
+        message: language.englishName,
+        value: language,
+      };
     });
-
-    console.clear();
+    this.seriesLanguagePrompt = new Select({
+      name: 'selectLangauge',
+      message: null,
+      choices: options,
+      header: `Folder: ${seriesDirectory}`,
+      initial: 'de',
+      footer: 'esc = abort',
+    });
+  
     try {
-      this.currentSeriesName = await seriesNamePrompt.run();
-      this.promptSeriesSuggestions(seriesDirectory, seriesLanguage, this.currentSeriesName);
-    } catch (error) {
-      // probably just aborted
+      await this.seriesLanguagePrompt.run();
+      this.currentSeriesLanguage = this.seriesLanguagePrompt.selected.value;
+      this.seriesLanguagePrompt.stop();
+      console.clear();
+      this.promptSeriesName(seriesDirectory, this.currentSeriesLanguage);
+    } catch {
+      this.seriesLanguagePrompt.stop();
       this.promptMainMenu();
     }
   }
 
-  private promptSeriesSuggestions(seriesDirectory: string, seriesLanguage: string, seriesName: string) {
-    this.currentPrompt = 'series-suggestions';
-    this.currentSeries = {}
-    this.promptEpisodeRenames(seriesDirectory, seriesLanguage, this.currentSeries);
-  }
+  private async promptSeriesName(seriesDirectory: string, seriesLanguage: SeriesLanguage) {
+    this.currentPrompt = 'series-name';
 
-  private promptEpisodeRenames(seriesName: string, seriesLanguage: string, selectedSeries: any) {
-    this.currentPrompt = 'episode-renames';
-    if (this.currentEpisodeRenames.length === 0) {
-      // TODO: fetch episode renames
+    const seriesName = path.basename(seriesDirectory);
+
+    this.seriesNamePrompt = new Input({
+      name: 'seriesName',
+      message: `series name`,
+      header: `Folder: ${seriesDirectory}\nLanguage: ${seriesLanguage.englishName}`,
+      footer: 'esc = abort',
+      initial: seriesName,
+    });
+
+    try {
+      this.currentSeriesName = await this.seriesNamePrompt.run();
+      this.seriesNamePrompt.stop();
+      console.clear();
+      this.promptSeriesSuggestions(seriesDirectory, seriesLanguage, this.currentSeriesName);
+    } catch (error) {
+      // probably just aborted
+      this.seriesNamePrompt.stop();
+      console.clear();
+      this.promptSeriesLanguage(seriesDirectory);
     }
-    this.currentEpisodeRenames = []
   }
 
-  private promptEpisodeAssign(filePath: string, series: any) {
+  private async promptSeriesSuggestions(seriesDirectory: string, seriesLanguage: SeriesLanguage, seriesName: string) {
+    this.currentPrompt = 'series-suggestions';
+    let possibleSeries: Array<Series>;
+    try {
+      possibleSeries = await tvdb.getSeriesByName(seriesName, {lang: seriesLanguage.abbreviation})
+    } catch {
+      console.clear();
+      console.log('Series not found. Did you spell it correctly?');
+      this.promptSeriesName(seriesDirectory, seriesLanguage);
+      return;
+    }
+
+    const options = possibleSeries.map((series: Series) => {
+      return {
+        name: series.id,
+        message: series.seriesName,
+        value: series,
+      };
+    });
+    this.seriesSelectionPrompt = new Select({
+      name: 'seriesSuggestions',
+      message: null,
+      choices: options,
+      header: `Folder: ${seriesDirectory}\nLanguage: ${seriesLanguage.englishName}\nSearchTerm: ${seriesName}`,
+      footer: 'esc = abort',
+    });
+  
+    try {
+      await this.seriesSelectionPrompt.run();
+      this.currentSeries = this.seriesSelectionPrompt.selected.value;
+      this.seriesSelectionPrompt.stop();
+      console.clear();
+      this.promptEpisodeRenames(seriesDirectory, seriesLanguage, this.currentSeries);
+    } catch {
+      this.seriesSelectionPrompt.stop();
+      console.clear();
+      this.promptSeriesName(seriesDirectory, seriesLanguage);
+    }
+  }
+
+  private async promptEpisodeRenames(seriesDirectory: string, seriesLanguage: SeriesLanguage, selectedSeries: Series) {
+    this.currentPrompt = 'episode-renames';
+    const seriesDetails = await tvdb.getSeriesAllById(selectedSeries.id, {lang: seriesLanguage.abbreviation});
+    if (this.currentEpisodeRenames === undefined) {
+      this.currentEpisodeRenames = await this.generateEpisodeNames(seriesDirectory, seriesDetails);
+    }
+
+    const seasons = Object.keys(this.currentEpisodeRenames).sort();
+    const options = [];
+    for (const season of seasons) {
+      options.push({
+        name: `season${season}`,
+        message: `--- Season ${season} (${this.currentEpisodeRenames[season].folderName}) ---`,
+        value: `season${season}`,
+        disabled: '',
+      }, ...this.currentEpisodeRenames[season].episodeMappings)
+    }
+    this.episodeRenamePrompt = new Select({
+      name: 'seriesSuggestions',
+      message: null,
+      choices: options,
+      header: `Folder: ${seriesDirectory}\nLanguage: ${seriesLanguage.englishName}\nSeries: ${selectedSeries.seriesName}`,
+      footer: 'esc = abort',
+      initial: this.currentEpisodeAssign ? this.currentEpisodeAssign.name : undefined,
+    });
+  
+    try {
+      await this.episodeRenamePrompt.run();
+      this.currentEpisodeAssign = this.episodeRenamePrompt.selected;
+      this.episodeRenamePrompt.stop();
+      console.clear();
+      this.promptEpisodeAssign(seriesDirectory, seriesLanguage, selectedSeries, this.currentEpisodeAssign);
+    } catch {
+      this.episodeRenamePrompt.stop();
+      console.clear();
+      this.promptSeriesName(seriesDirectory, seriesLanguage);
+    }
+  }
+
+  private promptEpisodeAssign(seriesDirectory: string, seriesLanguage: SeriesLanguage, selectedSeries: Series, episodeMapping: EpisodeMapping) {
     this.currentPrompt = 'assign-episode';
   }
 
@@ -525,14 +734,15 @@ export class FileBrowser {
 
   private handleSeriesLanguageKeyPress(key: string, data: KeyPressData): void {
     if (data.name === 'backspace') {
-      // TODO: Stop language selection
+      this.seriesLanguagePrompt.stop();
       this.promptMainMenu();
     }
   }
 
   private handleSeriesSuggestionsKeyPress(key: string, data: KeyPressData): void {
     if (data.name === 'backspace') {
-      // TODO: Stop suggestion selection
+      this.seriesSelectionPrompt.stop();
+      console.clear();
       this.promptSeriesName(this.currentSeriesDirectory, this.currentSeriesLanguage);
     }
   }
@@ -540,6 +750,7 @@ export class FileBrowser {
   private handleEpisodeRenamesKeyPress(key: string, data: KeyPressData): void {
     if (data.name === 'backspace') {
       // TODO: Stop episode rename prompt
+      console.clear();
       this.promptSeriesSuggestions(this.currentSeriesDirectory, this.currentSeriesLanguage, this.currentSeriesName);
     }
   }
@@ -547,7 +758,181 @@ export class FileBrowser {
   private handleAssignEpisodeKeyPress(key: string, data: KeyPressData): void {
     if (data.name === 'backspace') {
       // TODO: Stop assign episode prompt
-      this.promptEpisodeRenames(this.currentSeriesDirectory, this.currentSeriesLanguage, this.currentSeriesName);
+      console.clear();
+      this.promptEpisodeRenames(this.currentSeriesDirectory, this.currentSeriesLanguage, this.currentSeries);
     }
+  }
+
+  private async generateEpisodeNames(seriesDirectory: string, seriesDetails: Series): Promise<SeasonMapping> {
+    const folders = await this.getFolderNames(seriesDirectory);
+    
+    const seasonRegex = /\d+/;
+    const seasonFolders = folders.map((folderName: string): FolderSeasonMatch => {
+      const folderSeasonNumber = folderName.match(seasonRegex);
+      if (folderSeasonNumber === null) {
+        return undefined;
+      }
+      return {
+        folderName: folderName,
+        season: parseInt(folderSeasonNumber[0]),
+      }
+    }).filter((folderSeasonInfo: FolderSeasonMatch): boolean => {
+      return folderSeasonInfo !== undefined;
+    });
+
+    const episodeMappings = await Promise.all(seasonFolders.map((folderSeasonInfo: FolderSeasonMatch): Promise<Array<ArrayPromptOption>> => {
+      const seasonFolder = path.join(seriesDirectory, folderSeasonInfo.folderName)
+      return this.generateEpisodeNamesForSeason(seasonFolder, folderSeasonInfo.season, seriesDetails);
+    }));
+
+    const result: SeasonMapping = {};
+    for (let i = 0; i < seasonFolders.length; i++) {
+      result[seasonFolders[i].season] = {
+        folderName: seasonFolders[i].folderName,
+        episodeMappings: episodeMappings[i],
+      }
+    }
+
+    return result;
+  }
+
+  private async generateEpisodeNamesForSeason(seasonFolder: string, season: number, seriesDetails: Series): Promise<Array<EpisodeMapping>> {
+    const episodesInSeason = seriesDetails.episodes.filter((episode: Episode) => {
+      return episode.airedSeason === season;
+    });
+
+    const filesInSeasonFolder = await this.getFileNames(seasonFolder);
+    return filesInSeasonFolder.map((fileName) => {
+      return this.generateEpisodeName(seriesDetails.seriesName, seasonFolder, fileName, episodesInSeason);
+    })
+    .filter((episodeMapping: EpisodeMapping) => {
+      return episodeMapping !== undefined;
+    })
+    .sort((episodeMapping1: EpisodeMapping, episodeMapping2: EpisodeMapping): number => {
+      const episode1 = episodeMapping1.value.episode !== undefined
+        ? episodeMapping1.value.episode.airedEpisodeNumber
+        : undefined;
+
+      const episode2 = episodeMapping2.value.episode !== undefined
+        ? episodeMapping2.value.episode.airedEpisodeNumber
+        : undefined;
+        
+      if (episode1 === episode2) {
+        return 0;
+      }
+      
+      if (episode1 === undefined) {
+        return 1
+      }
+
+      if (episode2 === undefined) {
+        return -1;
+      }
+
+      return episode1 - episode2;
+
+    })
+  }
+
+  private generateEpisodeName(seriesName: string, seasonFolder: string, fileName: string, episodesInSeason: Array<Episode>): EpisodeMapping {
+    const fileExtension = path.extname(fileName).toLowerCase();
+    const fileIsVideo = videoFileExtensions.includes(fileExtension);
+    if (!fileIsVideo) {
+      return this.unchangedEpisodeMapping(seasonFolder, fileName);
+    }
+
+    let episodeNumber;
+    for (const {regex, numberStart} of episodeRegexes) {
+      const episodeNumberMatch = fileName.match(regex);
+      if (episodeNumberMatch !== undefined) {
+        episodeNumber = parseInt(episodeNumberMatch[0].substring(numberStart))
+        break;
+      }
+    }
+
+    if (episodeNumber === undefined) {
+      return this.unchangedEpisodeMapping(seasonFolder, fileName);
+    }
+
+    const episode = episodesInSeason.find((episode: Episode) => {
+      return episode.airedEpisodeNumber === episodeNumber;
+    });
+
+    if (episode === undefined) {
+      return this.unchangedEpisodeMapping(seasonFolder, fileName);
+    }
+
+    const prefixedEpisodeNumber = this.generateEpisodeNumber(episodeNumber, episodesInSeason.length);
+    const sanatizedName = this.generateEpisodeFileName(
+      fileExtension,
+      seriesName,
+      episode.airedSeason,
+      episode.episodeName,
+      episode.airedEpisodeNumber,
+      episodesInSeason.length
+    );
+    return {
+      name: sanatizedName,
+      message: `E${prefixedEpisodeNumber}: ${fileName} > ${sanatizedName}`,
+      value: {
+        originalPath: path.join(seasonFolder, fileName),
+        updatedPath: path.join(seasonFolder, sanatizedName),
+        episode: episode,
+        rename: fileName !== sanatizedName,
+        episodeNumber: prefixedEpisodeNumber,
+      }
+    }
+  }
+
+  private generateEpisodeNumber(episodeNumber: number, episodesInSeason: number) {
+    if (episodesInSeason < 100) {
+      return this.twoZero(episodeNumber);
+    }
+    return this.threeZero(episodeNumber);
+  }
+
+  private unchangedEpisodeMapping(seasonFolder: string, fileName: string): EpisodeMapping {
+    return {
+      name: fileName,
+      message: `--- ${fileName}`,
+      value: {
+        originalPath: path.join(seasonFolder, fileName),
+        updatedPath: path.join(seasonFolder, fileName),
+        episode: undefined,
+        rename: false,
+        episodeNumber: undefined,
+      }
+    }
+  }
+
+  private generateEpisodeFileName(
+    fileExtension: string,
+    seriesName: string,
+    seasonNumber: number,
+    episodeName: string,
+    episodeNumber: number,
+    episodesInSeason: number
+  ): string {
+    let newEpisodeName = `${seriesName}.S${this.twoZero(seasonNumber)}E${this.generateEpisodeNumber(episodeNumber, episodesInSeason)}.${episodeName}${fileExtension}`;
+    for (const {regex, replacement} of episodeReplaces) {
+      newEpisodeName = newEpisodeName.replace(regex, replacement);
+    }
+    return newEpisodeName;
+  }
+
+  private twoZero(input: number): string {
+    if (input < 10) {
+      return `0${input}`;
+    }
+
+    return `${input}`;
+  }
+
+  private threeZero(input: number): string {
+    if (input < 100) {
+      return `0${this.twoZero(input)}`;
+    }
+
+    return `${input}`;
   }
 }

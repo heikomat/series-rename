@@ -27,7 +27,7 @@
   },
   "dependencies": {
     "enquirer": "^2.3.1",
-    "rimraf": "^3.0.0",
-    "tvdb.js": "^1.0.7"
+    "node-tvdb": "^4.1.0",
+    "rimraf": "^3.0.0"
   }
 }
