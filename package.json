@@ -26,6 +26,7 @@
     "typescript": "^3.6.2"
   },
   "dependencies": {
-    "enquirer": "^2.3.1"
+    "enquirer": "^2.3.1",
+    "rimraf": "^3.0.0"
   }
 }

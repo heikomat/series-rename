@@ -1,6 +1,7 @@
 import {promises as fsPromises} from 'fs';
 import {Select, Input, Confirm} from 'enquirer/lib/prompts';
 import path from 'path';
+import rimraf from 'rimraf';
 
 type KeyPressData = {
   sequence: string,
@@ -14,7 +15,7 @@ export class FileBrowser {
 
   private startDirectory: string;
   private currentDirectory: string;
-  private highlightedFolder: string;
+  private highlightedFolder: string = '..';
   private currentPrompt: 'folder-selection' | 'rename' | 'create-folder' | 'delete-folder' | 'series-name' | 'series-selection';
   private filesPrompt: Select;
   constructor(startDirectory: string = process.cwd()) {
@@ -56,7 +57,7 @@ export class FileBrowser {
       choices: options,
       header: this.currentDirectory,
       initial: this.highlightedFolder,
-      footer: '[r]ename, [c]reate folder, [d]elete',
+      footer: '[r]ename, [c]reate folder, [d]elete, [h]oist files',
     });
 
     console.clear();
@@ -119,8 +120,7 @@ export class FileBrowser {
     this.currentPrompt = 'delete-folder';
 
     const confirmPrompt = new Confirm({
-      name: `delete ${filePath}`,
-      message: 'are you sure?',
+      message: `deleting ${filePath}. Are you sure?`,
       footer: 'esc = abort',
     });
 
@@ -128,14 +128,82 @@ export class FileBrowser {
     try {
       const userAgreed = await confirmPrompt.run();
       if (userAgreed) {
-        await fsPromises.rmdir(filePath);
-        this.highlightedFolder = undefined;
+        await new Promise((resolve) => {
+          rimraf(filePath, resolve);
+        })
+        this.highlightedFolder = '..';
       }
     } catch (error) {
       // probably just aborted
     }
 
     this.promptMainMenu();
+  }
+
+  private async hoistFiles(directory: string) {
+    const files = await this.getAllFilesInFolder(directory);
+    console.clear();
+    const confirmPrompt = new Confirm({
+      message: `hoisting ${files.length} files. Are you sure?`,
+      footer: 'esc = abort',
+    });
+
+    try {
+      const userAgreed = await confirmPrompt.run();
+      if (userAgreed) {
+        // move all children to the target directory
+        await Promise.all(files.map((filePath: string) => {
+          const filename = path.basename(filePath);
+          const targetFile = path.join(directory, filename);
+          if (filePath === targetFile) {
+            return undefined;
+          }
+
+          return fsPromises.rename(filePath, targetFile);
+        }));
+
+        // delete all the now empty folders
+        const remainingFolders = await this.getFolderNames(directory);
+        await Promise.all(remainingFolders.map((folderName) => {
+          return new Promise((resolve) => {
+            rimraf(path.join(directory, folderName), resolve);
+          })
+        }));
+        this.highlightedFolder = '..';
+      }
+    } catch (error) {
+      console.log(error);
+      // probably just aborted
+    }
+
+    this.promptMainMenu();
+  }
+
+  private async getAllFilesInFolder(folderPath: string): Promise<Array<string>> {
+    const currentFolderItems = await fsPromises.readdir(folderPath);
+    const [files, folders] = await Promise.all([
+      this.filterAsync(currentFolderItems, async (itemName: string): Promise<boolean> => {
+        const isFolder = await this.isFolder(path.join(folderPath, itemName));
+        return !isFolder
+      }),
+      this.filterAsync(currentFolderItems, async (itemName: string): Promise<boolean> => {
+        const isFolder = await this.isFolder(path.join(folderPath, itemName));
+        return isFolder
+      }),
+    ]);
+
+    const filesInThisFolder = files.map((fileName: string) => {
+      return path.join(folderPath, fileName);
+    })
+
+    const filesInSubFolders = await Promise.all(folders.map((folderName: string) => {
+      return this.getAllFilesInFolder(path.join(folderPath, folderName));
+    }));
+
+    return [
+      ...filesInThisFolder,
+      ...filesInSubFolders.flat(),
+    ]
   }
 
   private async getFolderNames(basePath: string): Promise<Array<string>> {
@@ -196,22 +264,23 @@ export class FileBrowser {
   }
 
   private handleFolderSelectionKeyPress(key: string, data: KeyPressData): void {
+    this.highlightedFolder = this.filesPrompt.selected.value;
     if (key === 'r') {
-      this.highlightedFolder = this.filesPrompt.selected.value;
       const selectedFolder = path.join(this.currentDirectory, this.filesPrompt.selected.value);
       this.filesPrompt.stop();
       this.promptRename(selectedFolder);
     }
     if (key === 'c') {
-      this.highlightedFolder = this.filesPrompt.selected.value;
       this.filesPrompt.stop();
       this.promptCreateFolder(this.currentDirectory);
     }
     if (key === 'd') {
-      this.highlightedFolder = this.filesPrompt.selected.value;
       this.filesPrompt.stop();
       const selectedFolder = path.join(this.currentDirectory, this.filesPrompt.selected.value);
       this.promptDeleteFolder(selectedFolder);
+    }
+    if (key === 'h') {
+      this.hoistFiles(this.currentDirectory);
     }
   }
 
