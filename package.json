@@ -1,0 +1,31 @@
+{
+  "name": "series-rename",
+  "version": "0.1.0",
+  "scripts": {
+    "build": "tsc --build --force",
+    "start": "node --experimental-modules ./dist/index.js",
+    "inspect": "node --experimental-modules --inspect ./dist/index.js",
+    "watch": "tsc-watch --build --onSuccess 'npm start --silent'",
+    "watch-inspect": "tsc-watch --build --onSuccess 'npm run inspect'",
+    "lint": "eslint --fix \"./**/*.ts\"",
+    "lint-nofix": "eslint \"./**/*.ts\"",
+    "lint-quiet": "eslint --quiet --fix ./**/*.ts"
+  },
+  "main": "dist/index.js",
+  "typings": "dist/declarations/index.d.ts",
+  "devDependencies": {
+    "@types/inquirer": "^6.5.0",
+    "@types/node": "^12.7.4",
+    "@typescript-eslint/eslint-plugin": "^1.13.0",
+    "@typescript-eslint/parser": "^1.13.0",
+    "eslint-config-5minds-typescript": "^1.0.0",
+    "eslint-plugin-6river": "^1.0.6",
+    "eslint-plugin-import": "^2.18.2",
+    "eslint-plugin-no-null": "^1.0.2",
+    "tsc-watch": "^3.0.0",
+    "typescript": "^3.6.2"
+  },
+  "dependencies": {
+    "enquirer": "^2.3.1"
+  }
+}
