@@ -63,7 +63,7 @@ export class FileBrowser {
       choices: options,
       header: this.currentDirectory,
       initial: this.highlightedFolder,
-      footer: '[r]ename, [c]reate folder, [d]elete, [m]ove, [h]oist files, [u]pdate, [p]urge non-videos',
+      footer: '[R]ename, [C]reate folder, [D]elete, [M]ove, [U]pdate, [H]oist files, [P]urge non-videos, [S]tandardize names, [E]xit',
     });
 
     console.clear();
@@ -398,6 +398,9 @@ export class FileBrowser {
     if (key === 'p') {
       this.filesPrompt.stop();
       this.promptNonVideoPurge(this.currentDirectory);
+    }
+    if (key === 'e') {
+      this.filesPrompt.stop();
     }
   }
 
