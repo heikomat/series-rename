@@ -781,6 +781,7 @@ export class FileBrowser {
 
   private handleMoveFolderKeyPress(key: string, data: KeyPressData): void {
     if (key === 'a') {
+      this.moveFolderPrompt.stop();
       this.moveFolder(this.currentFolderToMove, this.currentMoveTarget);
     }
     if (data.name === 'backspace') {
