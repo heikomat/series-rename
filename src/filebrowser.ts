@@ -11,6 +11,8 @@ type KeyPressData = {
   shift: boolean,
 };
 
+const videoFileExtensions = ['.mp4', '.mkv', '.avi'];
+
 export class FileBrowser {
 
   private startDirectory: string;
@@ -61,7 +63,7 @@ export class FileBrowser {
       choices: options,
       header: this.currentDirectory,
       initial: this.highlightedFolder,
-      footer: '[r]ename, [c]reate folder, [d]elete, [m]ove, [h]oist files, [u]pdate',
+      footer: '[r]ename, [c]reate folder, [d]elete, [m]ove, [h]oist files, [u]pdate, [p]urge non-videos',
     });
 
     console.clear();
@@ -247,6 +249,36 @@ export class FileBrowser {
     this.promptMainMenu();
   }
 
+  private async promptNonVideoPurge(folderToPurge: string): Promise<void> {
+    const files = await this.getAllFilesInFolder(folderToPurge);
+    const nonVideoFiles = files.filter((filename: string) => {
+      const fileExtension = path.extname(filename);
+      const fileIsVideo = videoFileExtensions.includes(fileExtension);
+      return !fileIsVideo;
+    });
+
+    console.clear();
+    const confirmPrompt = new Confirm({
+      message: `deleting ${nonVideoFiles.length} non-video files. Are you sure?`,
+      footer: 'esc = abort',
+    });
+
+    try {
+      const userAgreed = await confirmPrompt.run();
+      if (userAgreed) {
+        // delete all non-video-files
+        await Promise.all(nonVideoFiles.map((fileName: string) => {
+          return fsPromises.unlink(fileName);
+        }));
+      }
+    } catch (error) {
+      console.log(error);
+      // probably just aborted
+    }
+
+    this.promptMainMenu();
+  }
+
   private async getAllFilesInFolder(folderPath: string): Promise<Array<string>> {
     const currentFolderItems = await fsPromises.readdir(folderPath);
     const [files, folders] = await Promise.all([
@@ -362,6 +394,10 @@ export class FileBrowser {
     if (key === 'u') {
       this.filesPrompt.stop();
       this.promptMainMenu();
+    }
+    if (key === 'p') {
+      this.filesPrompt.stop();
+      this.promptNonVideoPurge(this.currentDirectory);
     }
   }
 
