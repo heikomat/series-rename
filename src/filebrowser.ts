@@ -190,7 +190,6 @@ export class FileBrowser {
     ]
 
     this.filesPrompt = new Select({
-      name: 'selectedFolder',
       message: null,
       choices: options,
       header: this.currentDirectory,
@@ -217,7 +216,6 @@ export class FileBrowser {
     const filename = path.basename(filePath);
 
     const renamePrompt = new Input({
-      name: 'rename',
       message: `rename ${filename}`,
       header: directory,
       footer: 'esc = abort',
@@ -244,7 +242,6 @@ export class FileBrowser {
     this.currentPrompt = 'create-folder';
 
     const createFolderPrompt = new Input({
-      name: 'new folder',
       message: 'name',
       header: targetDirectory,
       footer: 'esc = abort',
@@ -367,7 +364,6 @@ export class FileBrowser {
       : 'esc = abort'
 
     this.moveFolderPrompt = new Select({
-      name: 'targetFolder',
       message: null,
       choices: options,
       header: header,
@@ -431,6 +427,7 @@ export class FileBrowser {
 
   private async promptSeriesLanguage(seriesDirectory) {
     this.currentPrompt = 'series-language';
+    this.currentEpisodeRenames = undefined;
     const languages: Array<SeriesLanguage> = await tvdb.getLanguages();
     
     const options = languages.map((language: any) => {
@@ -441,7 +438,6 @@ export class FileBrowser {
       };
     });
     this.seriesLanguagePrompt = new Select({
-      name: 'selectLangauge',
       message: null,
       choices: options,
       header: `Folder: ${seriesDirectory}`,
@@ -467,7 +463,6 @@ export class FileBrowser {
     const seriesName = path.basename(seriesDirectory);
 
     this.seriesNamePrompt = new Input({
-      name: 'seriesName',
       message: `series name`,
       header: `Folder: ${seriesDirectory}\nLanguage: ${seriesLanguage.englishName}`,
       footer: 'esc = abort',
@@ -489,6 +484,7 @@ export class FileBrowser {
 
   private async promptSeriesSuggestions(seriesDirectory: string, seriesLanguage: SeriesLanguage, seriesName: string) {
     this.currentPrompt = 'series-suggestions';
+    this.currentEpisodeRenames = undefined;
     let possibleSeries: Array<Series>;
     try {
       possibleSeries = await tvdb.getSeriesByName(seriesName, {lang: seriesLanguage.abbreviation})
@@ -507,7 +503,6 @@ export class FileBrowser {
       };
     });
     this.seriesSelectionPrompt = new Select({
-      name: 'seriesSuggestions',
       message: null,
       choices: options,
       header: `Folder: ${seriesDirectory}\nLanguage: ${seriesLanguage.englishName}\nSearchTerm: ${seriesName}`,
@@ -545,7 +540,6 @@ export class FileBrowser {
       }, ...this.currentEpisodeRenames[season].episodeMappings)
     }
     this.episodeRenamePrompt = new Select({
-      name: 'seriesSuggestions',
       message: null,
       choices: options,
       header: `Folder: ${seriesDirectory}\nLanguage: ${seriesLanguage.englishName}\nSeries: ${selectedSeries.seriesName}`,
@@ -581,7 +575,6 @@ export class FileBrowser {
       }, ...possibleEpisodes[season].episodeMappings)
     }
     this.episodeAssignPrompt = new Select({
-      name: 'episodeAssign',
       message: null,
       choices: options,
       header: `File: ${episodeMapping.value.originalPath}\nLanguage: ${seriesLanguage.englishName}\nSeries: ${selectedSeries.seriesName}`,
@@ -802,7 +795,7 @@ export class FileBrowser {
 
   private handleEpisodeRenamesKeyPress(key: string, data: KeyPressData): void {
     if (data.name === 'backspace') {
-      // TODO: Stop episode rename prompt
+      this.episodeRenamePrompt.stop();
       console.clear();
       this.promptSeriesSuggestions(this.currentSeriesDirectory, this.currentSeriesLanguage, this.currentSeriesName);
     }
@@ -810,7 +803,7 @@ export class FileBrowser {
 
   private handleAssignEpisodeKeyPress(key: string, data: KeyPressData): void {
     if (data.name === 'backspace') {
-      // TODO: Stop assign episode prompt
+      this.episodeAssignPrompt.stop();
       console.clear();
       this.promptEpisodeRenames(this.currentSeriesDirectory, this.currentSeriesLanguage, this.currentSeries);
     }
