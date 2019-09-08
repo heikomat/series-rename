@@ -2,6 +2,7 @@ import {promises as fsPromises} from 'fs';
 import {Select, Input, Confirm} from 'enquirer/lib/prompts';
 import path from 'path';
 import rimraf from 'rimraf';
+import tvdbjs from 'tvdb.js';
 
 type KeyPressData = {
   sequence: string,
@@ -11,6 +12,8 @@ type KeyPressData = {
   shift: boolean,
 };
 
+const tv = tvdbjs(process.env.TVDB_API_KEY);
+
 const videoFileExtensions = ['.mp4', '.mkv', '.avi'];
 
 export class FileBrowser {
@@ -18,11 +21,35 @@ export class FileBrowser {
   private startDirectory: string;
   private currentDirectory: string;
   private highlightedFolder: string = '..';
-  private currentPrompt: 'folder-selection' | 'rename' | 'create-folder' | 'delete-folder' | 'series-name' | 'series-selection' | 'move-folder';
+  private currentPrompt:
+    'folder-selection'
+    | 'rename'
+    | 'create-folder'
+    | 'delete-folder'
+    | 'series-language'
+    | 'series-name'
+    | 'series-suggestions'
+    | 'episode-renames'
+    | 'assign-episode'
+    | 'move-folder'
+    | 'non-video-purge'
+    | 'hoist-files';
+
   private filesPrompt: Select;
+  private confirmDeletePrompt: Confirm;
+  private confirmHoistPrompt: Confirm;
+  private moveFolderPrompt: Select;
+  private confirmPurgePrompt: Confirm;
+
 
   private currentFolderToMove: string;
   private currentMoveTarget: string;
+
+  private currentSeriesDirectory: string;
+  private currentSeriesLanguage: string;
+  private currentSeriesName: string;
+  private currentSeries: any;
+  private currentEpisodeRenames: Array<any>;
 
   constructor(startDirectory: string = process.cwd()) {
     this.startDirectory = startDirectory;
@@ -30,8 +57,6 @@ export class FileBrowser {
   }
 
   public async start(): Promise<void> {
-    console.log(this.startDirectory)
-    console.log(this.currentDirectory)
     process.stdin.on('keypress', this.handleKeyPress);
     this.promptMainMenu();
   }
@@ -130,14 +155,14 @@ export class FileBrowser {
   private async promptDeleteFolder(filePath: string) {
     this.currentPrompt = 'delete-folder';
 
-    const confirmPrompt = new Confirm({
+    this.confirmDeletePrompt = new Confirm({
       message: `deleting ${filePath}. Are you sure?`,
       footer: 'esc = abort',
     });
 
     console.clear();
     try {
-      const userAgreed = await confirmPrompt.run();
+      const userAgreed = await this.confirmDeletePrompt.run();
       if (userAgreed) {
         await new Promise((resolve) => {
           rimraf(filePath, resolve);
@@ -152,15 +177,16 @@ export class FileBrowser {
   }
 
   private async hoistFiles(directory: string) {
+    this.currentPrompt = 'hoist-files';
     const files = await this.getAllFilesInFolder(directory);
     console.clear();
-    const confirmPrompt = new Confirm({
+    this.confirmHoistPrompt = new Confirm({
       message: `hoisting ${files.length} files. Are you sure?`,
       footer: 'esc = abort',
     });
 
     try {
-      const userAgreed = await confirmPrompt.run();
+      const userAgreed = await this.confirmHoistPrompt.run();
       if (userAgreed) {
         // move all children to the target directory
         await Promise.all(files.map((filePath: string) => {
@@ -225,7 +251,7 @@ export class FileBrowser {
       ? '[a]ccept, esc = abort'
       : 'esc = abort'
 
-    const moveFolderPrompt = new Select({
+    this.moveFolderPrompt = new Select({
       name: 'targetFolder',
       message: null,
       choices: options,
@@ -236,10 +262,10 @@ export class FileBrowser {
 
     console.clear();
     try {
-      const selectedFolder = await moveFolderPrompt.run();
+      const selectedFolder = await this.moveFolderPrompt.run();
       this.promptMoveFolder(path.join(currentDirectory, selectedFolder), folderToMove);
     } catch {
-      moveFolderPrompt.stop();
+      this.moveFolderPrompt.stop();
       this.promptMainMenu();
     }
   }
@@ -250,6 +276,7 @@ export class FileBrowser {
   }
 
   private async promptNonVideoPurge(folderToPurge: string): Promise<void> {
+    this.currentPrompt = 'non-video-purge';
     const files = await this.getAllFilesInFolder(folderToPurge);
     const nonVideoFiles = files.filter((filename: string) => {
       const fileExtension = path.extname(filename);
@@ -258,13 +285,13 @@ export class FileBrowser {
     });
 
     console.clear();
-    const confirmPrompt = new Confirm({
+    this.confirmPurgePrompt = new Confirm({
       message: `deleting ${nonVideoFiles.length} non-video files. Are you sure?`,
       footer: 'esc = abort',
     });
 
     try {
-      const userAgreed = await confirmPrompt.run();
+      const userAgreed = await this.confirmPurgePrompt.run();
       if (userAgreed) {
         // delete all non-video-files
         await Promise.all(nonVideoFiles.map((fileName: string) => {
@@ -277,6 +304,58 @@ export class FileBrowser {
     }
 
     this.promptMainMenu();
+  }
+
+  private async promptSeriesRename(seriesDirectory: string): Promise<void> {
+    this.currentSeriesDirectory = seriesDirectory;
+    this.promptSeriesLanguage(seriesDirectory);
+  }
+
+  promptSeriesLanguage(seriesDirectory) {
+    this.currentPrompt = 'series-language';
+    this.currentSeriesLanguage = '';
+    this.promptSeriesName(seriesDirectory, this.currentSeriesLanguage);
+  }
+
+  private async promptSeriesName(seriesDirectory: string, seriesLanguage: string) {
+    this.currentPrompt = 'series-name';
+
+    const seriesName = path.basename(seriesDirectory);
+
+    const seriesNamePrompt = new Input({
+      name: 'series name',
+      message: `series name`,
+      header: seriesDirectory,
+      footer: 'esc = abort',
+      initial: seriesName,
+    });
+
+    console.clear();
+    try {
+      this.currentSeriesName = await seriesNamePrompt.run();
+      this.promptSeriesSuggestions(seriesDirectory, seriesLanguage, this.currentSeriesName);
+    } catch (error) {
+      // probably just aborted
+      this.promptMainMenu();
+    }
+  }
+
+  private promptSeriesSuggestions(seriesDirectory: string, seriesLanguage: string, seriesName: string) {
+    this.currentPrompt = 'series-suggestions';
+    this.currentSeries = {}
+    this.promptEpisodeRenames(seriesDirectory, seriesLanguage, this.currentSeries);
+  }
+
+  private promptEpisodeRenames(seriesName: string, seriesLanguage: string, selectedSeries: any) {
+    this.currentPrompt = 'episode-renames';
+    if (this.currentEpisodeRenames.length === 0) {
+      // TODO: fetch episode renames
+    }
+    this.currentEpisodeRenames = []
+  }
+
+  private promptEpisodeAssign(filePath: string, series: any) {
+    this.currentPrompt = 'assign-episode';
   }
 
   private async getAllFilesInFolder(folderPath: string): Promise<Array<string>> {
@@ -351,20 +430,32 @@ export class FileBrowser {
       this.handleFolderSelectionKeyPress(key, data);
     }
 
-    if (this.currentPrompt === 'rename') {
-      this.handleRenameKeyPress(key, data);
-    }
-
     if (this.currentPrompt === 'move-folder') {
       this.handleMoveFolderKeyPress(key, data);
     }
 
-    if (this.currentPrompt === 'series-name') {
-      this.handleSeriesNameKeyPress(key, data);
+    if (this.currentPrompt === 'hoist-files') {
+      this.handleHoistFilesKeyPress(key, data);
     }
 
-    if (this.currentPrompt === 'series-selection') {
-      this.handleSeriesSelectionKeyPress(key, data);
+    if (this.currentPrompt === 'non-video-purge') {
+      this.handleNonVideoPurgeKeyPress(key, data);
+    }
+
+    if (this.currentPrompt === 'series-language') {
+      this.handleSeriesLanguageKeyPress(key, data);
+    }
+
+    if (this.currentPrompt === 'series-suggestions') {
+      this.handleSeriesSuggestionsKeyPress(key, data);
+    }
+
+    if (this.currentPrompt === 'episode-renames') {
+      this.handleEpisodeRenamesKeyPress(key, data);
+    }
+
+    if (this.currentPrompt === 'assign-episode') {
+      this.handleAssignEpisodeKeyPress(key, data);
     }
   }
 
@@ -402,23 +493,61 @@ export class FileBrowser {
     if (key === 'e') {
       this.filesPrompt.stop();
     }
-  }
-
-  private handleRenameKeyPress(key: string, data: KeyPressData): void {
-
-  }
-
-  private handleSeriesNameKeyPress(key: string, data: KeyPressData): void {
-
-  }
-
-  private handleSeriesSelectionKeyPress(key: string, data: KeyPressData): void {
-
+    if (key === 's') {
+      this.filesPrompt.stop();
+      this.promptSeriesRename(this.currentDirectory);
+    }
   }
 
   private handleMoveFolderKeyPress(key: string, data: KeyPressData): void {
     if (key === 'a') {
       this.moveFolder(this.currentFolderToMove, this.currentMoveTarget);
+    }
+    if (data.name === 'backspace') {
+      this.moveFolderPrompt.stop();
+      this.promptMainMenu();
+    }
+  }
+
+  private handleHoistFilesKeyPress(key: string, data: KeyPressData): void {
+    if (data.name === 'backspace') {
+      this.confirmHoistPrompt.stop();
+      this.promptMainMenu();
+    }
+  }
+
+  private handleNonVideoPurgeKeyPress(key: string, data: KeyPressData): void {
+    if (data.name === 'backspace') {
+      this.confirmPurgePrompt.stop();
+      this.promptMainMenu();
+    }
+  }
+
+  private handleSeriesLanguageKeyPress(key: string, data: KeyPressData): void {
+    if (data.name === 'backspace') {
+      // TODO: Stop language selection
+      this.promptMainMenu();
+    }
+  }
+
+  private handleSeriesSuggestionsKeyPress(key: string, data: KeyPressData): void {
+    if (data.name === 'backspace') {
+      // TODO: Stop suggestion selection
+      this.promptSeriesName(this.currentSeriesDirectory, this.currentSeriesLanguage);
+    }
+  }
+
+  private handleEpisodeRenamesKeyPress(key: string, data: KeyPressData): void {
+    if (data.name === 'backspace') {
+      // TODO: Stop episode rename prompt
+      this.promptSeriesSuggestions(this.currentSeriesDirectory, this.currentSeriesLanguage, this.currentSeriesName);
+    }
+  }
+
+  private handleAssignEpisodeKeyPress(key: string, data: KeyPressData): void {
+    if (data.name === 'backspace') {
+      // TODO: Stop assign episode prompt
+      this.promptEpisodeRenames(this.currentSeriesDirectory, this.currentSeriesLanguage, this.currentSeriesName);
     }
   }
 }
